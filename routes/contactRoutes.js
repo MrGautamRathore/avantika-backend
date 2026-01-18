@@ -36,10 +36,35 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Update contact
+// Update contact (full update with notes)
 router.put('/:id', auth, async (req, res) => {
   try {
-    const updatedContact = await Contact.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const updatedContact = await Contact.findByIdAndUpdate(
+      req.params.id,
+      { ...req.body, updatedAt: Date.now() },
+      { new: true, runValidators: true }
+    );
+    if (!updatedContact) return res.status(404).json({ message: 'Contact not found' });
+    res.json(updatedContact);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Update contact status only
+router.patch('/:id/status', auth, async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['pending', 'in-progress', 'resolved', 'archived'].includes(status)) {
+      return res.status(400).json({ message: 'Invalid status value' });
+    }
+
+    const updatedContact = await Contact.findByIdAndUpdate(
+      req.params.id,
+      { status, updatedAt: Date.now() },
+      { new: true, runValidators: true }
+    );
+
     if (!updatedContact) return res.status(404).json({ message: 'Contact not found' });
     res.json(updatedContact);
   } catch (error) {

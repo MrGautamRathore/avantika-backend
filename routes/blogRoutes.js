@@ -22,7 +22,7 @@ router.get('/', async (req, res) => {
   try {
     const blogs = await Blog.find().sort({ createdAt: -1 });
     res.json(blogs);
-    console.log('All bligs', blogs);
+    //console.log('All blogs', blogs);
     
   } catch (error) {
     res.status(500).json({ message: error.message });

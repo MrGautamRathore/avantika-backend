@@ -1,5 +1,6 @@
 const express = require('express');
 const Website = require('../models/Website');
+const Review = require('../models/Review');
 const auth = require('../middleware/auth');
 
 const router = express.Router();
@@ -41,6 +42,16 @@ router.put('/', auth, async (req, res) => {
     res.json(updatedWebsite);
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+});
+
+// Get approved reviews for homepage
+router.get('/reviews', async (req, res) => {
+  try {
+    const reviews = await Review.find({ status: 'approved' }).sort({ createdAt: -1 }).limit(10);
+    res.json(reviews);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 

@@ -20,7 +20,28 @@ const router = express.Router();
 // Get all packages
 router.get('/', async (req, res) => {
   try {
-    const packages = await Package.find();
+    const packages = await Package.find().maxTimeMS(30000);
+    res.json(packages);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Get filtered packages
+router.get('/filter', async (req, res) => {
+  try {
+    const { category, destination } = req.query;
+    let filter = {};
+
+    if (category && category !== 'all') {
+      filter.category = category;
+    }
+
+    if (destination && destination !== 'all') {
+      filter.destination = destination;
+    }
+
+    const packages = await Package.find(filter).maxTimeMS(30000);
     res.json(packages);
   } catch (error) {
     res.status(500).json({ message: error.message });

@@ -2,7 +2,6 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
@@ -25,7 +24,9 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/avantika-
   useNewUrlParser: true,
   useUnifiedTopology: true,
 })
-.then(() => console.log('MongoDB connected'))
+.then(() => {
+  console.log('MongoDB connected');
+})
 .catch(err => console.error('MongoDB connection error:', err));
 
 // Routes

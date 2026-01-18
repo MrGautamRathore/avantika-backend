@@ -20,7 +20,7 @@ const router = express.Router();
 // Get all places
 router.get('/', async (req, res) => {
   try {
-    const places = await Place.find();
+    const places = await Place.find().maxTimeMS(30000);
     res.json(places);
   } catch (error) {
     res.status(500).json({ message: error.message });

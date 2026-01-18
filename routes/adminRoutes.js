@@ -21,7 +21,7 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const admin = await Admin.findOne({ email });
+    const admin = await Admin.findOne({ email }).maxTimeMS(30000);
     if (!admin) {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
@@ -39,7 +39,7 @@ router.post('/login', async (req, res) => {
 // Get admin profile (protected)
 router.get('/profile', auth, async (req, res) => {
   try {
-    const admin = await Admin.findById(req.admin._id).select('-password');
+    const admin = await Admin.findById(req.admin._id).select('-password').maxTimeMS(30000);
     res.json(admin);
   } catch (error) {
     res.status(500).json({ message: error.message });

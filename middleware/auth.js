@@ -9,7 +9,7 @@ const auth = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const admin = await Admin.findById(decoded.id);
+    const admin = await Admin.findById(decoded.id).maxTimeMS(30000);
 
     if (!admin) {
       return res.status(401).json({ message: 'Invalid token' });
