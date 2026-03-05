@@ -20,6 +20,7 @@ const packageSchema = new mongoose.Schema({
   pickupPoint: { type: String },
   dropPoint: { type: String },
   tripDate: { type: Date },
+  upcomingDates: [{ type: Date }],
   status: { type: Boolean, default: true },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

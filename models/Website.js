@@ -29,6 +29,12 @@ const websiteSchema = new mongoose.Schema({
     primaryColor: { type: String, default: '#f03e73' },
     secondaryColor: { type: String, default: '#ffffff' }
   },
+  // Route pricing: from one point to another with price
+  routePricing: [{
+    from: { type: String, required: true },
+    to: { type: String, required: true },
+    price: { type: Number, default: 0 }
+  }],
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

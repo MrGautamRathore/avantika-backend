@@ -34,7 +34,12 @@ const seedWebsite = async () => {
       theme: {
         primaryColor: "#f03e73",
         secondaryColor: "#ffffff"
-      }
+      },
+      routePricing: [
+        { from: "Mumbai", to: "Ujjain", price: 6499 },
+        { from: "Pune", to: "Ujjain", price: 6499 },
+        { from: "Nagpur", to: "Ujjain", price: 6000 }
+      ]
     };
 
     const website = new Website(websiteData);
