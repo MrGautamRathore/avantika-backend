@@ -102,31 +102,10 @@ const bookingSchema = new mongoose.Schema({
     default: 'pending'
   },
   
-  // Pricing
+  // Estimated Pricing (reference only - no payments)
   totalPrice: {
     type: Number,
     default: 0
-  },
-  advancePayment: {
-    type: Number,
-    default: 0
-  },
-  balancePayment: {
-    type: Number,
-    default: 0
-  },
-  
-  // Payment status
-  paymentStatus: {
-    type: String,
-    enum: ['pending', 'paid', 'partial', 'refunded'],
-    default: 'pending'
-  },
-  paymentId: {
-    type: String
-  },
-  paymentDate: {
-    type: Date
   },
   
   // Timestamps

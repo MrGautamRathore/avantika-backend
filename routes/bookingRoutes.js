@@ -50,10 +50,7 @@ router.post('/', async (req, res) => {
       groupPackage,
       personalGroupPackage,
       roomType,
-      totalPrice,
-      advancePayment,
-      balancePayment,
-      paymentStatus
+      totalPrice
     } = req.body;
 
     const bookingData = {
@@ -87,29 +84,17 @@ router.post('/', async (req, res) => {
       bookingData.packagePrice = package.price;
       bookingData.packageDuration = package.duration;
       
-      // Calculate total price
-      if (totalPrice) {
-        bookingData.totalPrice = totalPrice;
-        bookingData.advancePayment = advancePayment || Math.round(totalPrice * 0.4);
-        bookingData.balancePayment = balancePayment || (totalPrice - advancePayment);
-      } else {
-        bookingData.totalPrice = package.price * (numberOfPeople || 1);
-        bookingData.advancePayment = Math.round(bookingData.totalPrice * 0.4);
-        bookingData.balancePayment = bookingData.totalPrice - bookingData.advancePayment;
-      }
-      
-      bookingData.paymentStatus = paymentStatus || 'pending';
+      // Calculate estimated total price (reference)
+      bookingData.totalPrice = totalPrice || (package.price * (numberOfPeople || 1));
     } 
     // Handle service-only booking
     else if (serviceName) {
       bookingData.serviceName = serviceName;
       bookingData.totalPrice = totalPrice || 0;
-      bookingData.paymentStatus = paymentStatus || 'pending';
     }
     // No package and no service - still allow booking (custom inquiry)
     else {
       bookingData.totalPrice = totalPrice || 0;
-      bookingData.paymentStatus = paymentStatus || 'pending';
     }
 
     const booking = new Booking(bookingData);
@@ -176,11 +161,6 @@ router.put('/:id', async (req, res) => {
       packageDuration,
       serviceName,
       totalPrice,
-      advancePayment,
-      balancePayment,
-      paymentStatus,
-      paymentId,
-      paymentDate,
       status
     } = req.body;
 
@@ -205,11 +185,6 @@ router.put('/:id', async (req, res) => {
       packageDuration,
       serviceName,
       totalPrice,
-      advancePayment,
-      balancePayment,
-      paymentStatus,
-      paymentId,
-      paymentDate,
       status,
       updatedAt: Date.now()
     };
