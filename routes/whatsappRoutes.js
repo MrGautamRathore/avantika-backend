@@ -8,9 +8,9 @@ const router = express.Router();
 router.post("/send", async (req, res) => {
   try {
     const { phoneNumber, userName, packageName, packageDuration, type, bookingData, paymentData } = req.body;
-   /*  console.log("📥 Received WhatsApp request:", 
+     console.log("📥 Received WhatsApp request:", 
       req.body
-    ); */
+    ); 
 
     // Validation
     if (!phoneNumber) {
@@ -104,8 +104,8 @@ router.post("/send", async (req, res) => {
       paramsFallbackValue: {},
     };
 
-  //  console.log("📤 Sending payload:", JSON.stringify(payload, null, 2));
-   // console.log(`📋 Template Params Array:`, templateParamsArray);
+    console.log("📤 Sending payload:", JSON.stringify(payload, null, 2));
+    console.log(`📋 Template Params Array:`, templateParamsArray);
 
     // Send message via AiSensy API
     const apiResponse = await axios.post(
