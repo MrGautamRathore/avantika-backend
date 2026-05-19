@@ -13,8 +13,8 @@ const blogSchema = new mongoose.Schema({
   tags: [{ type: String }],
   date: { type: Date, default: Date.now },
   category: { type: String, required: true },
-  views: { type: Number, default: 0 },
-  published: { type: Boolean, default: false },
+  views: { type: Number, default: 198 },
+  published: { type: Boolean, default: true },
 });
 
 module.exports = mongoose.model("Blog", blogSchema);
