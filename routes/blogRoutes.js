@@ -83,7 +83,24 @@ router.put('/:id', auth, upload.single('image'), async (req, res) => {
   try {
     const updateData = { ...req.body };
 
-    // Handle image upload if new image is provided
+// Handle invalid date values
+if (
+  updateData.date === "undefined" ||
+  updateData.date === "null" ||
+  updateData.date === ""
+) {
+  delete updateData.date;
+} else if (updateData.date) {
+  const parsedDate = new Date(updateData.date);
+
+  if (isNaN(parsedDate.getTime())) {
+    return res.status(400).json({ message: "Invalid date format" });
+  }
+
+  updateData.date = parsedDate;
+}
+ 
+// Handle image upload if new image is provided
     if (req.file) {
       // First, get the existing blog to delete old image
       const existingBlog = await Blog.findById(req.params.id);

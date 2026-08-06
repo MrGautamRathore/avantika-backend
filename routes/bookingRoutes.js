@@ -21,7 +21,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id)
-      .populate('packageId', 'name images destination price duration');
+      .populate('packageId', 'name images destination price duration type pickupPoint dropPoint personPricing');
     if (!booking) return res.status(404).json({ message: 'Booking not found' });
     res.json(booking);
   } catch (error) {
@@ -32,25 +32,22 @@ router.get('/:id', async (req, res) => {
 // Create new booking (handles both package-based and service-only bookings)
 router.post('/', async (req, res) => {
   try {
-    const { 
-      packageId, 
+    const {
+      packageId,
       serviceName,
-      name, 
-      email, 
-      phone, 
+      name,
+      email,
+      phone,
       age,
       gender,
       profId,
       adharNumber,
-      numberOfPeople, 
-      travelDate, 
+      numberOfPeople,
+      travelDate,
       specialRequests,
-      pickupPoints,
-      dropPoints,
-      groupPackage,
-      personalGroupPackage,
-      roomType,
-      totalPrice
+      totalPrice,
+      advancePayment,
+      balancePayment
     } = req.body;
 
     const bookingData = {
@@ -64,29 +61,42 @@ router.post('/', async (req, res) => {
       numberOfPeople: numberOfPeople || 1,
       travelDate,
       specialRequests,
-      pickupPoints,
-      dropPoints,
-      groupPackage: groupPackage || false,
-      personalGroupPackage: personalGroupPackage || false,
-      roomType,
       updatedAt: Date.now()
     };
 
     // Handle package-based booking
     if (packageId) {
-      const package = await Package.findById(packageId);
-      if (!package) {
+      const pkg = await Package.findById(packageId);
+      if (!pkg) {
         return res.status(404).json({ message: 'Package not found' });
       }
 
+      const people = numberOfPeople || 1;
+
       bookingData.packageId = packageId;
-      bookingData.packageName = package.name;
-      bookingData.packagePrice = package.price;
-      bookingData.packageDuration = package.duration;
-      
-      // Calculate estimated total price (reference)
-      bookingData.totalPrice = totalPrice || (package.price * (numberOfPeople || 1));
-    } 
+      bookingData.packageName = pkg.name;
+      bookingData.packagePrice = pkg.price;
+      bookingData.packageDuration = pkg.duration;
+
+      // packageType, pickup and drop always come from the package itself —
+      // never trust these from the client, since they define the pricing rule.
+      bookingData.packageType = pkg.type;
+      bookingData.pickupPoints = pkg.pickupPoint;
+      bookingData.dropPoints = pkg.dropPoint;
+
+      if (pkg.type === 'personal') {
+        // Personal packages are priced per person via personPricing
+        const perPersonPrice = pkg.priceFor ? pkg.priceFor(people) : pkg.price;
+        bookingData.pricePerPerson = perPersonPrice;
+        bookingData.totalPrice = totalPrice || (perPersonPrice * people);
+      } else {
+        // Group packages have one fixed total price, regardless of headcount
+        bookingData.totalPrice = totalPrice || pkg.price;
+      }
+
+      bookingData.advancePayment = advancePayment || Math.round(bookingData.totalPrice * 0.4);
+      bookingData.balancePayment = balancePayment || (bookingData.totalPrice - bookingData.advancePayment);
+    }
     // Handle service-only booking
     else if (serviceName) {
       bookingData.serviceName = serviceName;
@@ -140,27 +150,28 @@ router.delete('/:id', auth, async (req, res) => {
 // Update booking (admin only)
 router.put('/:id', async (req, res) => {
   try {
-    const { 
-      name, 
-      email, 
-      phone, 
+    const {
+      name,
+      email,
+      phone,
       age,
       gender,
       profId,
       adharNumber,
-      numberOfPeople, 
-      travelDate, 
+      numberOfPeople,
+      travelDate,
       specialRequests,
       pickupPoints,
       dropPoints,
-      groupPackage,
-      personalGroupPackage,
-      roomType,
       packageName,
       packagePrice,
       packageDuration,
+      packageType,
+      pricePerPerson,
       serviceName,
       totalPrice,
+      advancePayment,
+      balancePayment,
       status
     } = req.body;
 
@@ -177,20 +188,21 @@ router.put('/:id', async (req, res) => {
       specialRequests,
       pickupPoints,
       dropPoints,
-      groupPackage,
-      personalGroupPackage,
-      roomType,
       packageName,
       packagePrice,
       packageDuration,
+      packageType,
+      pricePerPerson,
       serviceName,
       totalPrice,
+      advancePayment,
+      balancePayment,
       status,
       updatedAt: Date.now()
     };
 
     // Remove undefined fields
-    Object.keys(updateData).forEach(key => 
+    Object.keys(updateData).forEach(key =>
       updateData[key] === undefined && delete updateData[key]
     );
 
