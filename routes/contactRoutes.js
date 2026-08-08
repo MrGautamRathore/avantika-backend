@@ -1,6 +1,8 @@
 const express = require('express');
 const Contact = require('../models/Contact');
 const auth = require('../middleware/auth');
+const sendEmail = require('../utils/sendEmail');
+const { newInquiryAdminTemplate } = require('../utils/emailTemplates');
 
 const router = express.Router();
 
@@ -27,9 +29,32 @@ router.get('/:id', async (req, res) => {
 
 // Create contact
 router.post('/', async (req, res) => {
-  const contact = new Contact(req.body);
+  // Apply defaults for any missing required fields so the form always submits successfully.
+  const { name, email, phone, subject, message } = req.body || {};
+
+  const contactData = {
+    name: (name || 'Website Visitor').toString().trim() || 'Website Visitor',
+    email: (email || '').toString().trim() || 'visitor@avantikatravels.com',
+    phone: (phone || '').toString().trim(),
+    subject: (subject || 'General Inquiry').toString().trim() || 'General Inquiry',
+    message: (message || 'No message provided.').toString().trim() || 'No message provided.',
+  };
+
+  const contact = new Contact(contactData);
+
   try {
     const newContact = await contact.save();
+
+    // Notify admin only — no confirmation email to the user, as intended.
+    // Wrapped so that a failed/slow email never breaks the inquiry submission.
+    if (process.env.ADMIN_EMAIL) {
+      sendEmail({
+        email: process.env.ADMIN_EMAIL,
+        subject: `New Contact Inquiry — ${newContact.subject}`,
+        html: newInquiryAdminTemplate(newContact)
+      }).catch((err) => console.error('Contact notification email failed:', err.message));
+    }
+
     res.status(201).json(newContact);
   } catch (error) {
     res.status(400).json({ message: error.message });

@@ -2,6 +2,11 @@ const express = require('express');
 const Booking = require('../models/Booking');
 const Package = require('../models/Package');
 const auth = require('../middleware/auth');
+const sendEmail = require('../utils/sendEmail');
+const {
+  newBookingAdminTemplate,
+  bookingConfirmationUserTemplate
+} = require('../utils/emailTemplates');
 
 const router = express.Router();
 
@@ -109,6 +114,25 @@ router.post('/', async (req, res) => {
 
     const booking = new Booking(bookingData);
     const newBooking = await booking.save();
+
+    // --- Emails: admin notification + user confirmation ---
+    // Fired in parallel, never blocks/breaks the booking response if they fail.
+    if (process.env.ADMIN_EMAIL) {
+      sendEmail({
+        email: process.env.ADMIN_EMAIL,
+        subject: `New Booking — ${newBooking.packageName || newBooking.serviceName || newBooking.name}`,
+        html: newBookingAdminTemplate(newBooking)
+      }).catch((err) => console.error('Admin booking email failed:', err.message));
+    }
+
+    if (newBooking.email) {
+      sendEmail({
+        email: newBooking.email,
+        subject: `Booking Received — Avantika Travels`,
+        html: bookingConfirmationUserTemplate(newBooking)
+      }).catch((err) => console.error('User confirmation email failed:', err.message));
+    }
+
     res.status(201).json(newBooking);
   } catch (error) {
     res.status(400).json({ message: error.message });

@@ -6,6 +6,9 @@ require('dotenv').config();
 
 const app = express();
 
+// Cron jobs (start after server boot)
+const startCronJobs = require('./utils/cronJobs');
+
 // Middleware
 app.use(helmet());
 app.use(cors());
@@ -56,6 +59,13 @@ app.use('*', (req, res) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  // Start scheduled jobs once the server is up.
+  try {
+    startCronJobs();
+    console.log('[cron] Cron job runner initialised.');
+  } catch (err) {
+    console.error('[cron] Failed to initialise cron jobs:', err.message);
+  }
 });
 
 module.exports = app;
