@@ -52,7 +52,13 @@ function getTransporter() {
       auth: {
         user: process.env.EMAIL_USERNAME,
         pass: process.env.EMAIL_PASSWORD // Gmail App Password, not your login password
-      }
+      },
+      pool: true,              // reuse a small pool of connections instead of
+                                // opening a brand-new TLS handshake every send
+      maxConnections: 3,
+      connectionTimeout: 15000, // ms to wait for the TLS handshake to complete
+      greetingTimeout: 15000,
+      socketTimeout: 20000
     });
   } else {
     // Mailtrap (or any dev SMTP sandbox) for local/dev testing

@@ -29,30 +29,27 @@ router.get('/:id', async (req, res) => {
 
 // Create contact
 router.post('/', async (req, res) => {
-  // Apply defaults for any missing required fields so the form always submits successfully.
-  const { name, email, phone, subject, message } = req.body || {};
-
-  const contactData = {
-    name: (name || 'Website Visitor').toString().trim() || 'Website Visitor',
-    email: (email || '').toString().trim() || 'visitor@avantikatravels.com',
-    phone: (phone || '').toString().trim(),
-    subject: (subject || 'General Inquiry').toString().trim() || 'General Inquiry',
-    message: (message || 'No message provided.').toString().trim() || 'No message provided.',
-  };
-
-  const contact = new Contact(contactData);
+  const contact = new Contact(req.body);
 
   try {
     const newContact = await contact.save();
 
     // Notify admin only — no confirmation email to the user, as intended.
-    // Wrapped so that a failed/slow email never breaks the inquiry submission.
+    // Awaited BEFORE sending the response: on hosting platforms that tear
+    // down the process/connection right after res.json(), a fire-and-forget
+    // email gets its TLS handshake killed mid-flight (this was causing the
+    // "socket disconnected before secure TLS connection" errors + emails
+    // silently not sending, especially on faster/mobile requests).
     if (process.env.ADMIN_EMAIL) {
-      sendEmail({
-        email: process.env.ADMIN_EMAIL,
-        subject: `New Contact Inquiry — ${newContact.subject}`,
-        html: newInquiryAdminTemplate(newContact)
-      }).catch((err) => console.error('Contact notification email failed:', err.message));
+      try {
+        await sendEmail({
+          email: process.env.ADMIN_EMAIL,
+          subject: `New Contact Inquiry — ${newContact.subject}`,
+          html: newInquiryAdminTemplate(newContact)
+        });
+      } catch (err) {
+        console.error('Contact notification email failed:', err.message);
+      }
     }
 
     res.status(201).json(newContact);

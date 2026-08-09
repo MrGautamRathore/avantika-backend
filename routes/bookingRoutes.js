@@ -116,22 +116,33 @@ router.post('/', async (req, res) => {
     const newBooking = await booking.save();
 
     // --- Emails: admin notification + user confirmation ---
-    // Fired in parallel, never blocks/breaks the booking response if they fail.
+    // Awaited (via Promise.allSettled so both fire in parallel, and one
+    // failing doesn't stop the other) BEFORE responding — same reasoning as
+    // in routes/contact.js: fire-and-forget emails were getting their Gmail
+    // TLS handshake killed mid-connection once the response was sent.
+    const emailJobs = [];
     if (process.env.ADMIN_EMAIL) {
-      sendEmail({
-        email: process.env.ADMIN_EMAIL,
-        subject: `New Booking — ${newBooking.packageName || newBooking.serviceName || newBooking.name}`,
-        html: newBookingAdminTemplate(newBooking)
-      }).catch((err) => console.error('Admin booking email failed:', err.message));
+      emailJobs.push(
+        sendEmail({
+          email: process.env.ADMIN_EMAIL,
+          subject: `New Booking — ${newBooking.packageName || newBooking.serviceName || newBooking.name}`,
+          html: newBookingAdminTemplate(newBooking)
+        })
+      );
     }
-
     if (newBooking.email) {
-      sendEmail({
-        email: newBooking.email,
-        subject: `Booking Received — Avantika Travels`,
-        html: bookingConfirmationUserTemplate(newBooking)
-      }).catch((err) => console.error('User confirmation email failed:', err.message));
+      emailJobs.push(
+        sendEmail({
+          email: newBooking.email,
+          subject: `Booking Received — Avantika Travels`,
+          html: bookingConfirmationUserTemplate(newBooking)
+        })
+      );
     }
+    const results = await Promise.allSettled(emailJobs);
+    results.forEach((r) => {
+      if (r.status === 'rejected') console.error('Booking email failed:', r.reason.message);
+    });
 
     res.status(201).json(newBooking);
   } catch (error) {
