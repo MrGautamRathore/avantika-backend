@@ -6,21 +6,40 @@ require('dotenv').config();
 
 const app = express();
 
+// Trust reverse proxies (Vercel) to read accurate client IP addresses for secure link binding
+app.set('trust proxy', true);
+
 // Cron jobs (start after server boot)
 const startCronJobs = require('./utils/cronJobs');
 
 // Middleware
-app.use(helmet());
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true }));
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  crossOriginOpenerPolicy: false
+}));
 
-// Rate limiting (disabled for development)
-// const limiter = rateLimit({
-//   windowMs: 15 * 60 * 1000, // 15 minutes
-//   max: 1000 // limit each IP to 1000 requests per windowMs
-// });
-// app.use(limiter);
+// Optional: set ALLOWED_ORIGINS="https://www.yoursite.com,https://yoursite.com" in the backend
+// environment to accept browser requests only from your frontend. If not set, all origins
+// are accepted (same as before).
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+const corsOptions = {
+  origin: allowedOrigins.length ? allowedOrigins : true,
+  credentials: true
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// Keep the raw request body - needed to verify the Razorpay webhook signature
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
+app.use(express.urlencoded({ extended: true }));
 
 // Database connection
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/avantika-travels', {
@@ -43,6 +62,7 @@ app.use('/api/stats', require('./routes/statsRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
 app.use('/api/galleries', require('./routes/galleryRoutes'));
 app.use('/api/bookings', require('./routes/bookingRoutes'));
+app.use('/api/custom-bookings', require('./routes/customBookingRoutes'));
 app.use('/api/whatsapp', require('./routes/whatsappRoutes'));
 
 // Error handling middleware

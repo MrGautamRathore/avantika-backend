@@ -4,7 +4,7 @@ const auth = require('../middleware/auth');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const slugify = require('../utils/slugify');
-
+const { requirePermission } = auth;
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,

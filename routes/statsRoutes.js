@@ -9,7 +9,6 @@ const Blog = require('../models/Blog');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 const { monthlyStatsAdminTemplate } = require('../utils/emailTemplates');
-
 // Get monthly stats
 router.get('/monthly', auth, async (req, res) => {
   try {

@@ -14,8 +14,8 @@
 
 const SITE_NAME = 'Avantika Travels';
 const SITE_URL = process.env.SITE_URL || 'https://www.avantikatravels.com';
-const BRAND_COLOR = '#c0392b'; // warm travel red — change to your brand color
-const BRAND_DARK = '#1a1a1a';
+const BRAND_COLOR = '#e91e63'; // pink accent — buttons, borders, links, pills
+const BRAND_DARK = '#000000';  // black text for headings/emphasis
 const WHATSAPP_NUMBER = process.env.WHATSAPP_NUMBER || ''; // e.g. 919876543210 (with country code, no +)
 
 // Logo is sent as a CID (inline) attachment by sendEmail.js, not fetched
@@ -32,22 +32,22 @@ function wrapper({ title, preheader, bodyHtml }) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>${title}</title>
 </head>
-<body style="margin:0;padding:0;background-color:#f4f4f7;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+<body style="margin:0;padding:0;background-color:#ffffff;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
   <!-- Preheader (hidden preview text) -->
   <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
     ${preheader || ''}
   </div>
 
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f7;padding:24px 0;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#ffffff;padding:24px 0;">
     <tr>
       <td align="center">
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #eeeeee;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #f0f0f0;box-shadow:0 2px 10px rgba(0,0,0,0.04);">
 
           <!-- Header -->
           <tr>
-            <td style="background:${BRAND_DARK};padding:24px 32px;text-align:center;">
+            <td style="background:#ffffff;padding:24px 32px;text-align:center;border-bottom:3px solid ${BRAND_COLOR};">
               <img src="cid:${LOGO_CID}" alt="${SITE_NAME}" style="height:44px;margin-bottom:4px;" />
-              <div style="color:#ffffff;font-size:13px;letter-spacing:1px;opacity:0.75;margin-top:6px;">
+              <div style="color:${BRAND_DARK};font-size:13px;letter-spacing:1px;opacity:0.7;margin-top:6px;font-weight:600;">
                 ${SITE_NAME.toUpperCase()}
               </div>
             </td>
@@ -88,8 +88,8 @@ function infoRow(label, value) {
   if (value === undefined || value === null || value === '') return '';
   return `
     <tr>
-      <td style="padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:14px;color:#888888;width:40%;">${label}</td>
-      <td style="padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:14px;color:#222222;font-weight:500;">${value}</td>
+      <td style="padding:8px 0;border-bottom:1px solid #f5f5f5;font-size:14px;color:#777777;width:40%;">${label}</td>
+      <td style="padding:8px 0;border-bottom:1px solid #f5f5f5;font-size:14px;color:${BRAND_DARK};font-weight:500;">${value}</td>
     </tr>`;
 }
 
@@ -128,7 +128,7 @@ function newInquiryAdminTemplate(contact) {
   const bodyHtml = `
     <div style="margin-bottom:16px;">${pillStatus('New Inquiry')}</div>
     <h2 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_DARK};">You've got a new website inquiry</h2>
-    <p style="margin:0 0 20px 0;font-size:14px;color:#666666;line-height:1.6;">
+    <p style="margin:0 0 20px 0;font-size:14px;color:#333333;line-height:1.6;">
       Someone just filled out the contact form on ${SITE_NAME}. Details below.
     </p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
@@ -137,8 +137,8 @@ function newInquiryAdminTemplate(contact) {
       ${infoRow('Phone', contact.phone)}
       ${infoRow('Subject', contact.subject)}
     </table>
-    <div style="margin-top:20px;padding:16px;background:#faf7f2;border-left:3px solid ${BRAND_COLOR};border-radius:4px;">
-      <p style="margin:0;font-size:14px;color:#444444;line-height:1.6;white-space:pre-wrap;">${contact.message}</p>
+    <div style="margin-top:20px;padding:16px;background:#fdf2f6;border-left:3px solid ${BRAND_COLOR};border-radius:4px;">
+      <p style="margin:0;font-size:14px;color:${BRAND_DARK};line-height:1.6;white-space:pre-wrap;">${contact.message}</p>
     </div>
     ${button(`mailto:${contact.email}`, 'Reply to ' + contact.name)}
     <p style="margin:0;font-size:13px;color:#999999;">Try to respond within 24 hours — quick replies convert better.</p>
@@ -156,9 +156,9 @@ function newInquiryAdminTemplate(contact) {
 function newBookingAdminTemplate(booking) {
   const title = booking.packageName || booking.serviceName || 'Custom Inquiry';
   const bodyHtml = `
-    <div style="margin-bottom:16px;">${pillStatus('New Booking', '#1e824c')}</div>
+    <div style="margin-bottom:16px;">${pillStatus('New Booking')}</div>
     <h2 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_DARK};">New booking received</h2>
-    <p style="margin:0 0 20px 0;font-size:14px;color:#666666;line-height:1.6;">
+    <p style="margin:0 0 20px 0;font-size:14px;color:#333333;line-height:1.6;">
       A new booking just came in for <strong>${title}</strong>.
     </p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
@@ -176,9 +176,9 @@ function newBookingAdminTemplate(booking) {
       ${infoRow('Balance', booking.balancePayment ? `₹${booking.balancePayment}` : '')}
     </table>
     ${booking.specialRequests ? `
-    <div style="margin-top:20px;padding:16px;background:#faf7f2;border-left:3px solid ${BRAND_COLOR};border-radius:4px;">
+    <div style="margin-top:20px;padding:16px;background:#fdf2f6;border-left:3px solid ${BRAND_COLOR};border-radius:4px;">
       <p style="margin:0 0 4px 0;font-size:12px;color:#999999;">Special Request</p>
-      <p style="margin:0;font-size:14px;color:#444444;line-height:1.6;">${booking.specialRequests}</p>
+      <p style="margin:0;font-size:14px;color:${BRAND_DARK};line-height:1.6;">${booking.specialRequests}</p>
     </div>` : ''}
     ${button(`${SITE_URL}/admin/bookings`, 'View in Admin Panel')}
   `;
@@ -197,7 +197,7 @@ function bookingConfirmationUserTemplate(booking) {
   const bodyHtml = `
     <div style="margin-bottom:16px;">${pillStatus('Booking Received')}</div>
     <h2 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_DARK};">Thanks for booking with us, ${booking.name.split(' ')[0]}! 🎉</h2>
-    <p style="margin:0 0 20px 0;font-size:14px;color:#666666;line-height:1.6;">
+    <p style="margin:0 0 20px 0;font-size:14px;color:#333333;line-height:1.6;">
       We've received your booking for <strong>${title}</strong>. Our team will reach out shortly to confirm the details and next steps.
     </p>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
@@ -232,7 +232,7 @@ function monthlyStatsAdminTemplate(stats, comparisonGrowth = {}) {
         ${growth >= 0 ? '▲' : '▼'} ${Math.abs(growth).toFixed(1)}% vs last month
       </div>`;
     return `
-      <td style="padding:14px;text-align:center;border:1px solid #f0f0f0;border-radius:8px;">
+      <td style="padding:14px;text-align:center;border:1px solid #f5f5f5;border-radius:8px;">
         <div style="font-size:24px;font-weight:700;color:${BRAND_DARK};">${value ?? 0}</div>
         <div style="font-size:12px;color:#999999;margin-top:2px;">${label}</div>
         ${growthHtml}
@@ -242,7 +242,7 @@ function monthlyStatsAdminTemplate(stats, comparisonGrowth = {}) {
   const bodyHtml = `
     <div style="margin-bottom:16px;">${pillStatus('Monthly Report')}</div>
     <h2 style="margin:0 0 8px 0;font-size:20px;color:${BRAND_DARK};">Your ${stats.month} performance summary</h2>
-    <p style="margin:0 0 24px 0;font-size:14px;color:#666666;line-height:1.6;">
+    <p style="margin:0 0 24px 0;font-size:14px;color:#333333;line-height:1.6;">
       Here's how ${SITE_NAME} performed last month, generated automatically so you don't have to check the admin panel.
     </p>
 

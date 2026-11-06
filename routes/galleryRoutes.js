@@ -4,7 +4,7 @@ const auth = require('../middleware/auth');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const slugify = require('../utils/slugify');
-
+const { requirePermission } = auth;
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -50,7 +50,7 @@ router.get('/slug/:slug', async (req, res) => {
 });
 
 // Create gallery (admin only)
-router.post('/', auth, upload.array('images', 10), async (req, res) => {
+router.post('/', requirePermission('gallery'), upload.array('images', 10), async (req, res) => {
   try {
     const galleryData = { ...req.body };
 
@@ -87,7 +87,7 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
 });
 
 // Update gallery (admin only)
-router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
+router.put('/:id',  requirePermission('gallery'), upload.array('images', 10), async (req, res) => {
   try {
     const updateData = { ...req.body };
     if (updateData.name && !updateData.slug) {

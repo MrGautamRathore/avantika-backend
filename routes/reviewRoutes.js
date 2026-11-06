@@ -1,7 +1,7 @@
 const express = require('express');
 const Review = require('../models/Review');
 const auth = require('../middleware/auth');
-
+const { requirePermission } = auth;
 const router = express.Router();
 
 // Get all reviews
@@ -26,7 +26,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update review
-router.put('/:id', async (req, res) => {
+router.put('/:id',requirePermission('reviews'), async (req, res) => {
   try {
     const updatedReview = await Review.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!updatedReview) return res.status(404).json({ message: 'Review not found' });
@@ -37,7 +37,7 @@ router.put('/:id', async (req, res) => {
 });
 
 // Delete review
-router.delete('/:id', async (req, res) => {
+router.delete('/:id',auth, async (req, res) => {
   try {
     const review = await Review.findByIdAndDelete(req.params.id);
     if (!review) return res.status(404).json({ message: 'Review not found' });

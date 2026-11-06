@@ -3,11 +3,11 @@ const Contact = require('../models/Contact');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 const { newInquiryAdminTemplate } = require('../utils/emailTemplates');
-
+const { requirePermission } = auth;
 const router = express.Router();
 
 // Get all contacts (admin only)
-router.get('/', async (req, res) => {
+router.get('/',requirePermission('contacts'), async (req, res) => {
   try {
     const contacts = await Contact.find().sort({ createdAt: -1 });
     res.json(contacts);
@@ -17,7 +17,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get single contact
-router.get('/:id', async (req, res) => {
+router.get('/:id',requirePermission('contacts'),  async (req, res) => {
   try {
     const contact = await Contact.findById(req.params.id);
     if (!contact) return res.status(404).json({ message: 'Contact not found' });
@@ -30,7 +30,12 @@ router.get('/:id', async (req, res) => {
 // Create contact
 router.post('/', async (req, res) => {
   const contact = new Contact(req.body);
-
+  console.log(' honey pot data', req.body.honeypot  );
+  
+  if (req.body.honeypot) {
+    // Return success to fool the bot, but don't send email
+    return res.status(200).json({ success: true });
+  }
   try {
     const newContact = await contact.save();
 
@@ -59,7 +64,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update contact (full update with notes)
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id', requirePermission('contacts'),  async (req, res) => {
   try {
     const updatedContact = await Contact.findByIdAndUpdate(
       req.params.id,
@@ -74,7 +79,7 @@ router.put('/:id', auth, async (req, res) => {
 });
 
 // Update contact status only
-router.patch('/:id/status', auth, async (req, res) => {
+router.patch('/:id/status', requirePermission('contacts'),  async (req, res) => {
   try {
     const { status } = req.body;
     if (!['pending', 'in-progress', 'resolved', 'archived'].includes(status)) {
@@ -95,7 +100,7 @@ router.patch('/:id/status', auth, async (req, res) => {
 });
 
 // Delete contact
-router.delete('/:id', async (req, res) => {
+router.delete('/:id',auth, async (req, res) => {
   try {
     const contact = await Contact.findByIdAndDelete(req.params.id);
     if (!contact) return res.status(404).json({ message: 'Contact not found' });

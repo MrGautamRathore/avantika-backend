@@ -4,7 +4,7 @@ const auth = require('../middleware/auth');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const slugify = require('../utils/slugify');
-
+const { requirePermission } = auth;
 // Configure Cloudinary
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -63,7 +63,34 @@ function normalizePersonPricing(personPricing, basePrice, type) {
 function ensurePersonPricing(packageDoc) {
   if (!packageDoc) return packageDoc;
 
-  const type = normalizeType(packageDoc.type);
+  if (typeof packageDoc.personPricing === 'string' && packageDoc.personPricing.trim()) {
+    try {
+      packageDoc.personPricing = JSON.parse(packageDoc.personPricing);
+    } catch (e) {}
+  }
+
+  const hasExistingPricing = Array.isArray(packageDoc.personPricing) &&
+    packageDoc.personPricing.length > 0 &&
+    packageDoc.personPricing.some(p => p && Number(p.price) > 0);
+
+  if (hasExistingPricing) {
+    packageDoc.type = 'personal';
+    const base = Number(packageDoc.price) || 0;
+    const priceMap = new Map();
+    packageDoc.personPricing.forEach(p => {
+      if (p && p.persons) priceMap.set(Number(p.persons), Number(p.price) || base);
+    });
+    const normalized = [];
+    for (let i = 1; i <= 12; i++) {
+      normalized.push({ persons: i, price: priceMap.has(i) ? priceMap.get(i) : base });
+    }
+    packageDoc.personPricing = normalized;
+    return packageDoc;
+  }
+
+  const rawType = (packageDoc.type || '').trim().toLowerCase();
+  const type = rawType === 'personal' ? 'personal' : 'group';
+  packageDoc.type = type;
 
   if (type === 'group') {
     if (packageDoc.personPricing && packageDoc.personPricing.length > 0) {
@@ -83,7 +110,7 @@ function ensurePersonPricing(packageDoc) {
 // Get all packages
 router.get('/', async (req, res) => {
   try {
-    const packages = await Package.find().maxTimeMS(30000);
+    const packages = await Package.find().maxTimeMS(30000).lean();
     packages.forEach(ensurePersonPricing);
     res.json(packages);
   } catch (error) {
@@ -109,7 +136,7 @@ router.get('/filter', async (req, res) => {
       filter.type = type;
     }
 
-    const packages = await Package.find(filter).maxTimeMS(30000);
+    const packages = await Package.find(filter).maxTimeMS(30000).lean();
     packages.forEach(ensurePersonPricing);
     res.json(packages);
   } catch (error) {
@@ -120,7 +147,7 @@ router.get('/filter', async (req, res) => {
 // Get single package
 router.get('/:id', async (req, res) => {
   try {
-    const package = await Package.findById(req.params.id);
+    const package = await Package.findById(req.params.id).lean();
     if (!package) return res.status(404).json({ message: 'Package not found' });
     ensurePersonPricing(package);
     res.json(package);
@@ -130,7 +157,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // Create package (admin only)
-router.post('/', auth, upload.array('images', 10), async (req, res) => {
+router.post('/', requirePermission('packages'), upload.array('images', 10), async (req, res) => {
   try {
     const packageData = { ...req.body };
     if (packageData.name && !packageData.slug) {
@@ -168,7 +195,7 @@ router.post('/', auth, upload.array('images', 10), async (req, res) => {
 });
 
 // Update package (admin only)
-router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
+router.put('/:id', requirePermission('packages'), upload.array('images', 10), async (req, res) => {
   try {
     const updateData = { ...req.body };
 
@@ -242,7 +269,7 @@ router.put('/:id', auth, upload.array('images', 10), async (req, res) => {
 // Delete package (admin only)
 router.delete('/:id', auth, async (req, res) => {
   try {
-    const package = await Package.findById(req.params.id);
+    const package = await Package.findById(req.params.id).lean();
     if (!package) return res.status(404).json({ message: 'Package not found' });
 
     if (package.images && package.images.length > 0) {

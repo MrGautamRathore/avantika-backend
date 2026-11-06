@@ -7,11 +7,11 @@ const {
   newBookingAdminTemplate,
   bookingConfirmationUserTemplate
 } = require('../utils/emailTemplates');
-
+const { requirePermission } = auth;
 const router = express.Router();
 
 // Get all bookings (admin only)
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('bookings') , async (req, res) => {
   try {
     const bookings = await Booking.find()
       .populate('packageId', 'name images destination')
@@ -151,7 +151,7 @@ router.post('/', async (req, res) => {
 });
 
 // Update booking status (admin only)
-router.patch('/:id/status', async (req, res) => {
+router.patch('/:id/status',requirePermission('bookings') , async (req, res) => {
   try {
     const { status } = req.body;
     if (!['pending', 'confirmed', 'cancelled', 'completed'].includes(status)) {
@@ -183,7 +183,7 @@ router.delete('/:id', auth, async (req, res) => {
 });
 
 // Update booking (admin only)
-router.put('/:id', async (req, res) => {
+router.put('/:id',requirePermission('bookings') , async (req, res) => {
   try {
     const {
       name,
