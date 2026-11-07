@@ -1,16 +1,29 @@
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const Booking = require('../models/CustomBooking');
+const Admin = require('../models/Admin');
 const auth = require('../middleware/auth');
 const sendEmail = require('../utils/sendEmail');
 const {
   newBookingAdminTemplate,
   bookingConfirmationUserTemplate
 } = require('../utils/emailTemplates');
+
 const { adminOnly, requirePermission } = auth;
 const authenticate = requirePermission('createBooking');
 const router = express.Router();
+
+// IMPORTANT: never let the browser cache these responses.
+// Chrome caches "410 Gone" (used for expired links) with NO expiry, so a customer whose link
+// was re-activated kept seeing the old "expired" answer from their own browser cache.
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
 
 // -----------------------------------------------------------------------------
 // CONFIG
@@ -23,7 +36,7 @@ const DEFAULT_ADVANCE_PERCENT = Number(process.env.DEFAULT_ADVANCE_PERCENT) || 2
 const STRICT_IP_LOCK = process.env.STRICT_IP_LOCK === 'true';
 const IS_PROD = process.env.NODE_ENV === 'production';
 // Razorpay API base URL. Default is the standard Razorpay endpoint.
-// Set RAZORPAY_API_BASE in env only if your IDFC dashboard gives a different endpoint.
+// Set RAZORPAY_API_BASE in env only if your dashboard gives a different endpoint.
 const RZP_API_BASE = (process.env.RAZORPAY_API_BASE || 'https://api.razorpay.com/v1').replace(/\/+$/, '');
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
@@ -367,6 +380,7 @@ function receiptView(b) {
     paidAmount: paid,
     advancePercent: total > 0 ? Math.round((paid / total) * 100) : 0,
     balanceAmount: Math.max(0, total - paid),
+    gatewayFee: Number(b.gatewayFeeAmount || 0),
     paymentStatus: b.paymentStatus,
     paymentId: b.razorpayPaymentId,
     paidAt: b.paidAt,
@@ -742,6 +756,22 @@ function sameDeviceOrIp(booking, req) {
   return STRICT_IP_LOCK ? Boolean(ipMatch) : Boolean(ipMatch || deviceMatch);
 }
 
+// Staff/admin preview: lets the person who created a booking look at the customer page
+// WITHOUT locking the link to their own device and without changing the booking status.
+async function getPreviewUser(req) {
+  try {
+    const header = req.header('Authorization') || '';
+    const t = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    if (!t) return null;
+    const decoded = jwt.verify(t, process.env.JWT_SECRET);
+    const user = await Admin.findById(decoded.id);
+    if (!user || user.isActive === false) return null;
+    return user;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function findByToken(token) {
   if (!TOKEN_RE.test(String(token || ''))) return null;
   return Booking.findOne({ customBookingToken: token, isCustomBooking: true });
@@ -772,6 +802,29 @@ router.get('/access/:token', async (req, res) => {
     let booking = await findByToken(req.params.token);
     if (!booking) return notFound(res);
 
+    // Preview mode (?preview=1): admin or the staff who created it. Never locks, never marks "opened".
+    if (req.query.preview === '1') {
+      const user = await getPreviewUser(req);
+      const isAdminUser = Boolean(user) && user.role !== 'staff';
+      const isOwner = Boolean(user) && String(booking.createdBy || '') === String(user._id);
+      if (!isAdminUser && !isOwner) {
+        return res.status(403).json({
+          success: false,
+          error: 'preview_forbidden',
+          message:
+            'Preview is only available to the admin or the staff member who created this booking. Please log in to the admin panel in this browser and try again.'
+        });
+      }
+      const exp = booking.tokenExpiresAt ? new Date(booking.tokenExpiresAt) : null;
+      return res.json({
+        success: true,
+        preview: true,
+        booking: customerView(booking),
+        remainingSeconds: exp ? Math.max(0, Math.floor((exp.getTime() - Date.now()) / 1000)) : 0,
+        isDemoMode: false
+      });
+    }
+
     // Already paid: only the same device / IP sees the receipt
     if (booking.paymentStatus === 'paid') {
       if (!sameDeviceOrIp(booking, req)) {
@@ -793,11 +846,20 @@ router.get('/access/:token', async (req, res) => {
       });
     }
 
+    // The customer may have paid but the page never got confirmed (bank fee, closed tab...).
+    // Ask Razorpay before treating the link as expired.
+    if (booking.razorpayOrderId && sameDeviceOrIp(booking, req)) {
+      const rec = await reconcileOrder(booking, 'access');
+      if (rec) return res.json({ success: true, isPaid: true, booking: receiptView(rec.booking) });
+    }
+
     const now = new Date();
     const expiresAt = booking.tokenExpiresAt ? new Date(booking.tokenExpiresAt) : null;
     if (!expiresAt || now > expiresAt) {
+      // Only flip to "expired" if the stored expiry is STILL in the past (a re-activation that
+      // happened a moment ago must not be overwritten)
       await Booking.updateOne(
-        { _id: booking._id, paymentStatus: { $ne: 'paid' } },
+        { _id: booking._id, paymentStatus: { $ne: 'paid' }, tokenExpiresAt: { $lte: now } },
         {
           $set: {
             tokenStatus: 'expired',
@@ -835,6 +897,216 @@ router.get('/access/:token', async (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
+// RAZORPAY HELPERS (with debug logging)
+// Logs never contain secrets: only ids (shortened), amounts, statuses and yes/no flags.
+// Set RAZORPAY_DEBUG=false in the backend env to silence them.
+// -----------------------------------------------------------------------------
+const RZP_DEBUG = process.env.RAZORPAY_DEBUG !== 'false';
+const REQUIRE_RAZORPAY_SIGNATURE = process.env.REQUIRE_RAZORPAY_SIGNATURE === 'true';
+
+function rzpLog(tag, data) {
+  if (!RZP_DEBUG) return;
+  console.log(`[razorpay] ${tag}${data === undefined ? '' : ' ' + JSON.stringify(data)}`);
+}
+
+const mask = (v) => {
+  const s = String(v || '');
+  return s ? `${s.slice(0, 10)}...(${s.length})` : '(none)';
+};
+
+function rzpErr(e) {
+  return (e && e.response && (e.response.data?.error || e.response.data)) || (e && e.message) || String(e);
+}
+
+async function rzpGet(path) {
+  const r = await axios.get(`${RZP_API_BASE}${path}`, {
+    headers: { Authorization: rzpAuthHeader() },
+    timeout: 10000
+  });
+  return r.data;
+}
+
+async function rzpPost(path, body) {
+  const r = await axios.post(`${RZP_API_BASE}${path}`, body, {
+    headers: { Authorization: rzpAuthHeader(), 'Content-Type': 'application/json' },
+    timeout: 10000
+  });
+  return r.data;
+}
+
+// -----------------------------------------------------------------------------
+// Marks the booking paid (atomic + idempotent) and sends notifications once.
+// Used by verify-payment, check-payment, access (reconcile) AND the webhook.
+//   paidPaise    = the package advance we asked for (order amount)
+//   gatewayPaise = what Razorpay actually charged the customer (can be higher when the
+//                  bank / payment method adds its own convenience fee)
+// -----------------------------------------------------------------------------
+async function sendPaidNotifications(booking) {
+  const { total, advance } = amountsOf(booking);
+  const paidAdv = booking.paidAmount || advance;
+
+  try {
+    const emailJobs = [];
+    if (process.env.ADMIN_EMAIL) {
+      emailJobs.push(
+        sendEmail({
+          email: process.env.ADMIN_EMAIL,
+          subject: `[ADVANCE PAID] Deal ${booking.dealId || ''} Confirmed — ${booking.packageName} (Adv: ₹${paidAdv} / Total: ₹${total})`,
+          html: newBookingAdminTemplate(booking)
+        })
+      );
+    }
+    if (booking.email) {
+      emailJobs.push(
+        sendEmail({
+          email: booking.email,
+          subject: 'Booking Confirmed & Advance Received — Avantika Travels',
+          html: bookingConfirmationUserTemplate(booking)
+        })
+      );
+    }
+    await Promise.allSettled(emailJobs);
+  } catch (emailErr) {
+    console.error('Email sending failed for paid booking:', emailErr.message);
+  }
+
+  try {
+    const apiKey = process.env.AISENSY_API_KEY || process.env.AISENSY_PROJECT_API_KEY;
+    if (apiKey && booking.phone) {
+      let formattedPhone = booking.phone.replace(/\D/g, '');
+      if (formattedPhone.length === 10) formattedPhone = '91' + formattedPhone;
+
+      const payload = {
+        apiKey,
+        campaignName: 'avantika_booking_initiated',
+        destination: formattedPhone,
+        userName: 'Avantika Travels',
+        templateParams: [
+          booking.customerFullName || booking.name || 'Customer',
+          booking.packageName || 'Custom Package',
+          booking.packageName || 'Custom Package',
+          booking.travelStartDate ? new Date(booking.travelStartDate).toLocaleDateString('en-IN') : 'TBD',
+          String(total),
+          String(paidAdv)
+        ],
+        source: 'custom-booking-paid'
+      };
+
+      await axios
+        .post('https://backend.aisensy.com/campaign/t1/api/v2', payload, {
+          headers: { 'Content-Type': 'application/json' },
+          timeout: 10000
+        })
+        .catch((err) => console.error('AiSensy error:', err.message));
+    }
+  } catch (waErr) {
+    console.error('WhatsApp notify error:', waErr.message);
+  }
+}
+
+async function finalizePaid(booking, { orderId, paymentId, signature, paidPaise, gatewayPaise }) {
+  const { total, advance } = amountsOf(booking);
+  const paid = paidPaise ? Math.round(paidPaise / 100) : advance;
+  const gateway = gatewayPaise ? Number(gatewayPaise) / 100 : paid;
+  const now = new Date();
+
+  const updated = await Booking.findOneAndUpdate(
+    { _id: booking._id, paymentStatus: { $ne: 'paid' } },
+    {
+      $set: {
+        status: 'confirmed',
+        paymentStatus: 'paid',
+        tokenStatus: 'used',
+        razorpayOrderId: orderId,
+        razorpayPaymentId: paymentId,
+        razorpaySignature: signature || '',
+        paidAmount: paid,
+        gatewayChargedAmount: gateway,
+        gatewayFeeAmount: Math.max(0, Math.round((gateway - paid) * 100) / 100),
+        advancePayment: paid,
+        balancePayment: Math.max(0, total - paid),
+        paidAt: now,
+        updatedAt: now,
+        lastStatusUpdatedAt: now,
+        paymentIssue: ''
+      }
+    },
+    { new: true }
+  );
+
+  if (!updated) {
+    rzpLog('finalizePaid: already paid (idempotent)', { booking: String(booking._id) });
+    return { booking: await Booking.findById(booking._id), already: true };
+  }
+  rzpLog('finalizePaid: booking confirmed', {
+    booking: String(booking._id),
+    dealId: updated.dealId,
+    payment: mask(paymentId),
+    advance: paid,
+    gatewayCharged: gateway,
+    extraFee: updated.gatewayFeeAmount
+  });
+  await sendPaidNotifications(updated);
+  return { booking: updated, already: false };
+}
+
+// -----------------------------------------------------------------------------
+// Asks Razorpay what happened to this booking's order. If a payment was captured
+// (even though the customer's browser never reported back), the booking is confirmed.
+// This covers: bank page closed too early, handler never fired, signature missing,
+// customer closed the tab, amount slightly higher because of bank charges.
+// -----------------------------------------------------------------------------
+async function reconcileOrder(booking, source = 'reconcile') {
+  try {
+    const orderId = booking.razorpayOrderId;
+    if (!orderId || orderId.startsWith('order_sim_') || !isRazorpayConfigured()) return null;
+
+    const list = await rzpGet(`/orders/${orderId}/payments`);
+    const items = Array.isArray(list.items) ? list.items : [];
+    const expected = Number(booking.razorpayOrderAmount);
+
+    rzpLog(`${source}: payments on order`, {
+      order: mask(orderId),
+      expectedPaise: expected,
+      payments: items.map((p) => ({
+        id: mask(p.id),
+        status: p.status,
+        amount: p.amount,
+        method: p.method,
+        bank: p.bank || undefined,
+        fee: p.fee,
+        error_code: p.error_code || undefined
+      }))
+    });
+
+    for (const p of items) {
+      if (p.status === 'authorized' && Number(p.amount) >= expected) {
+        try {
+          await rzpPost(`/payments/${p.id}/capture`, { amount: p.amount, currency: 'INR' });
+          p.status = 'captured';
+          rzpLog(`${source}: authorized payment captured`, { payment: mask(p.id) });
+        } catch (e) {
+          rzpLog(`${source}: capture failed`, rzpErr(e));
+        }
+      }
+      if (p.status === 'captured' && Number(p.amount) >= expected && p.currency === 'INR') {
+        return await finalizePaid(booking, {
+          orderId,
+          paymentId: p.id,
+          signature: '',
+          paidPaise: expected,
+          gatewayPaise: Number(p.amount)
+        });
+      }
+    }
+    return null;
+  } catch (e) {
+    rzpLog(`${source}: failed`, rzpErr(e));
+    return null;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // Customer submits details -> create (or reuse) Razorpay order for the advance
 // POST /api/custom-bookings/create-order/:token
 // -----------------------------------------------------------------------------
@@ -848,6 +1120,15 @@ router.post('/create-order/:token', async (req, res) => {
     }
     if (booking.status === 'cancelled') {
       return res.status(410).json({ success: false, error: 'cancelled', message: 'This booking has been cancelled.' });
+    }
+
+    // The customer may already have paid on an earlier attempt (e.g. the bank added a fee and
+    // the page did not complete). Check with Razorpay first and show the receipt if so.
+    if (booking.razorpayOrderId && sameDeviceOrIp(booking, req)) {
+      const rec = await reconcileOrder(booking, 'create-order');
+      if (rec) {
+        return res.json({ success: true, alreadyPaid: true, booking: receiptView(rec.booking) });
+      }
     }
 
     const now = new Date();
@@ -915,6 +1196,7 @@ router.post('/create-order/:token', async (req, res) => {
         Number(booking.razorpayOrderAmount) === amountInPaise
       ) {
         await booking.save();
+        rzpLog('create-order: reusing existing order', { order: mask(booking.razorpayOrderId), amountInPaise });
         return res.json({
           success: true,
           orderId: booking.razorpayOrderId,
@@ -928,41 +1210,44 @@ router.post('/create-order/:token', async (req, res) => {
       }
 
       try {
-        const orderResponse = await axios.post(
-          `${RZP_API_BASE}/orders`,
-          {
-            amount: amountInPaise,
-            currency: 'INR',
-            receipt: `rcpt_${booking._id.toString().slice(-10)}_${Date.now().toString().slice(-6)}`,
-            notes: {
-              bookingId: booking._id.toString(),
-              dealId: booking.dealId || '',
-              packageName: String(booking.packageName || '').slice(0, 100)
-            }
-          },
-          {
-            headers: { Authorization: rzpAuthHeader(), 'Content-Type': 'application/json' },
-            timeout: 10000
-          }
-        );
+        rzpLog('create-order: creating order', {
+          apiBase: RZP_API_BASE,
+          keyIdPrefix: String(process.env.RAZORPAY_KEY_ID || '').slice(0, 9),
+          booking: String(booking._id),
+          dealId: booking.dealId,
+          amountInPaise
+        });
 
-        booking.razorpayOrderId = orderResponse.data.id;
+        const order = await rzpPost('/orders', {
+          amount: amountInPaise,
+          currency: 'INR',
+          receipt: `rcpt_${booking._id.toString().slice(-10)}_${Date.now().toString().slice(-6)}`,
+          notes: {
+            bookingId: booking._id.toString(),
+            dealId: booking.dealId || '',
+            packageName: String(booking.packageName || '').slice(0, 100)
+          }
+        });
+
+        rzpLog('create-order: order created', { order: mask(order.id), status: order.status, amount: order.amount });
+
+        booking.razorpayOrderId = order.id;
         booking.razorpayOrderAmount = amountInPaise;
         await booking.save();
 
         return res.json({
           success: true,
-          orderId: orderResponse.data.id,
-          amount: orderResponse.data.amount,
+          orderId: order.id,
+          amount: order.amount,
           advanceAmount: advance,
           totalAmount: total,
-          currency: orderResponse.data.currency || 'INR',
+          currency: order.currency || 'INR',
           keyId: process.env.RAZORPAY_KEY_ID,
           booking: bookingPayload
         });
       } catch (razorpayErr) {
         await booking.save();
-        console.error('Razorpay order error:', razorpayErr.response?.data || razorpayErr.message);
+        rzpLog('create-order: Razorpay REJECTED the order', rzpErr(razorpayErr));
         return res.status(502).json({
           success: false,
           message: 'Could not start the payment. Please try again in a moment.'
@@ -1002,114 +1287,38 @@ router.post('/create-order/:token', async (req, res) => {
 });
 
 // -----------------------------------------------------------------------------
-// Marks the booking paid (atomic + idempotent) and sends notifications once.
-// Used by verify-payment AND the Razorpay webhook.
-// -----------------------------------------------------------------------------
-async function sendPaidNotifications(booking) {
-  const { total, advance } = amountsOf(booking);
-  const paidAdv = booking.paidAmount || advance;
-
-  try {
-    const emailJobs = [];
-    if (process.env.ADMIN_EMAIL) {
-      emailJobs.push(
-        sendEmail({
-          email: process.env.ADMIN_EMAIL,
-          subject: `[ADVANCE PAID] Deal ${booking.dealId || ''} Confirmed — ${booking.packageName} (Adv: ₹${paidAdv} / Total: ₹${total})`,
-          html: newBookingAdminTemplate(booking)
-        })
-      );
-    }
-    if (booking.email) {
-      emailJobs.push(
-        sendEmail({
-          email: booking.email,
-          subject: 'Booking Confirmed & Advance Received — Avantika Travels',
-          html: bookingConfirmationUserTemplate(booking)
-        })
-      );
-    }
-    await Promise.allSettled(emailJobs);
-  } catch (emailErr) {
-    console.error('Email sending failed for paid booking:', emailErr.message);
-  }
-
-  try {
-    const apiKey = process.env.AISENSY_API_KEY || process.env.AISENSY_PROJECT_API_KEY;
-    if (apiKey && booking.phone) {
-      let formattedPhone = booking.phone.replace(/\D/g, '');
-      if (formattedPhone.length === 10) formattedPhone = '91' + formattedPhone;
-
-      const payload = {
-        apiKey,
-        campaignName: 'avantika_booking_initiated',
-        destination: formattedPhone,
-        userName: 'Avantika Travels',
-        templateParams: [
-          booking.customerFullName || booking.name || 'Customer',
-          booking.packageName || 'Custom Package',
-          booking.packageName || 'Custom Package',
-          booking.travelStartDate ? new Date(booking.travelStartDate).toLocaleDateString('en-IN') : 'TBD',
-          String(total),
-          String(paidAdv)
-        ],
-        source: 'custom-booking-paid'
-      };
-
-      await axios
-        .post('https://backend.aisensy.com/campaign/t1/api/v2', payload, {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 10000
-        })
-        .catch((err) => console.error('AiSensy error:', err.message));
-    }
-  } catch (waErr) {
-    console.error('WhatsApp notify error:', waErr.message);
-  }
-}
-
-async function finalizePaid(booking, { orderId, paymentId, signature, paidPaise }) {
-  const { total, advance } = amountsOf(booking);
-  const paid = paidPaise ? Math.round(paidPaise / 100) : advance;
-  const now = new Date();
-
-  const updated = await Booking.findOneAndUpdate(
-    { _id: booking._id, paymentStatus: { $ne: 'paid' } },
-    {
-      $set: {
-        status: 'confirmed',
-        paymentStatus: 'paid',
-        tokenStatus: 'used',
-        razorpayOrderId: orderId,
-        razorpayPaymentId: paymentId,
-        razorpaySignature: signature || '',
-        paidAmount: paid,
-        advancePayment: paid,
-        balancePayment: Math.max(0, total - paid),
-        paidAt: now,
-        updatedAt: now,
-        lastStatusUpdatedAt: now,
-        paymentIssue: ''
-      }
-    },
-    { new: true }
-  );
-
-  if (!updated) {
-    return { booking: await Booking.findById(booking._id), already: true };
-  }
-  await sendPaidNotifications(updated);
-  return { booking: updated, already: false };
-}
-
-// -----------------------------------------------------------------------------
 // Customer finished paying -> verify with Razorpay and confirm
 // POST /api/custom-bookings/verify-payment/:token
+//
+// Security model: the payment is ALWAYS fetched from Razorpay's server with our secret key and
+// must belong to THIS booking's order and cover its amount. The browser signature is checked
+// when Razorpay sends it, but a missing signature no longer blocks a genuine payment
+// (set REQUIRE_RAZORPAY_SIGNATURE=true to make it mandatory).
 // -----------------------------------------------------------------------------
 router.post('/verify-payment/:token', async (req, res) => {
   try {
     const booking = await findByToken(req.params.token);
     if (!booking) return notFound(res);
+
+    const body = req.body || {};
+    const paymentId = String(body.razorpay_payment_id || '');
+    const orderId = String(body.razorpay_order_id || booking.razorpayOrderId || '');
+    const signature = String(body.razorpay_signature || '');
+
+    rzpLog('verify-payment: received from browser', {
+      booking: String(booking._id),
+      dealId: booking.dealId,
+      bodyKeys: Object.keys(body),
+      has_payment_id: Boolean(paymentId),
+      has_order_id: Boolean(body.razorpay_order_id),
+      has_signature: Boolean(signature),
+      signatureLength: signature.length,
+      orderInBody: mask(body.razorpay_order_id),
+      orderOnBooking: mask(booking.razorpayOrderId),
+      orderMatches: !body.razorpay_order_id || body.razorpay_order_id === booking.razorpayOrderId,
+      bookingStatus: booking.status,
+      alreadyPaid: booking.paymentStatus === 'paid'
+    });
 
     // Idempotent: already confirmed (e.g. by webhook)
     if (booking.paymentStatus === 'paid') {
@@ -1119,16 +1328,14 @@ router.post('/verify-payment/:token', async (req, res) => {
       return res.json({ success: true, message: 'Booking confirmed.', booking: receiptView(booking) });
     }
 
-    const orderId = String(req.body?.razorpay_order_id || '');
-    const paymentId = String(req.body?.razorpay_payment_id || '');
-    const signature = String(req.body?.razorpay_signature || '');
     const idRe = /^[A-Za-z0-9_]{5,64}$/;
-
-    if (!idRe.test(orderId) || !idRe.test(paymentId)) {
+    if (!idRe.test(paymentId) || !idRe.test(orderId)) {
+      rzpLog('verify-payment: REJECTED - missing or malformed payment/order id');
       return res.status(400).json({ success: false, message: 'Invalid payment details.' });
     }
     // The order must be the one we created for THIS booking
     if (!booking.razorpayOrderId || booking.razorpayOrderId !== orderId) {
+      rzpLog('verify-payment: REJECTED - order does not belong to this booking');
       return res.status(400).json({ success: false, message: 'Payment does not match this booking.' });
     }
 
@@ -1150,64 +1357,108 @@ router.post('/verify-payment/:token', async (req, res) => {
       return res.status(503).json({ success: false, message: 'Payment verification is unavailable.' });
     }
 
-    // 1) Signature check
-    const expected = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(`${orderId}|${paymentId}`)
-      .digest('hex');
-    if (!safeEqual(expected, signature)) {
-      return res.status(400).json({ success: false, message: 'Payment verification failed: invalid signature.' });
+    // 1) Browser signature (only when Razorpay sent one)
+    if (signature) {
+      const expected = crypto
+        .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+        .update(`${orderId}|${paymentId}`)
+        .digest('hex');
+      const sigOk = safeEqual(expected, signature);
+      rzpLog('verify-payment: signature check', { valid: sigOk });
+      if (!sigOk) {
+        return res.status(400).json({ success: false, message: 'Payment verification failed: invalid signature.' });
+      }
+    } else {
+      rzpLog('verify-payment: WARNING no razorpay_signature received from checkout. Falling back to server-side payment lookup.', {
+        requireSignature: REQUIRE_RAZORPAY_SIGNATURE
+      });
+      if (REQUIRE_RAZORPAY_SIGNATURE) {
+        return res.status(400).json({ success: false, message: 'Payment verification failed: signature missing.' });
+      }
     }
 
-    // 2) Confirm with Razorpay that the payment is real, for the right order and amount
+    // 2) Ask Razorpay directly (authoritative)
     let payment;
     try {
-      const r = await axios.get(`${RZP_API_BASE}/payments/${paymentId}`, {
-        headers: { Authorization: rzpAuthHeader() },
-        timeout: 10000
-      });
-      payment = r.data;
+      payment = await rzpGet(`/payments/${paymentId}`);
     } catch (e) {
-      console.error('Razorpay payment fetch error:', e.response?.data || e.message);
+      rzpLog('verify-payment: could not fetch payment from Razorpay', rzpErr(e));
+      // Maybe the payment lookup failed but the order shows it as paid
+      const rec = await reconcileOrder(booking, 'verify-payment');
+      if (rec) {
+        return res.json({ success: true, message: 'Booking confirmed.', booking: receiptView(rec.booking) });
+      }
       return res.status(502).json({
         success: false,
-        message: 'We could not confirm your payment yet. Do not pay again. Please contact Avantika Travels with your Deal ID.'
+        message: 'We could not confirm your payment yet. Do not pay again. Please tap “Check payment status” or contact Avantika Travels with your Deal ID.'
       });
     }
 
-    if (
-      payment.order_id !== orderId ||
-      Number(payment.amount) !== Number(booking.razorpayOrderAmount) ||
-      payment.currency !== 'INR'
-    ) {
+    const expectedPaise = Number(booking.razorpayOrderAmount);
+    rzpLog('verify-payment: payment from Razorpay', {
+      payment: mask(payment.id),
+      order: mask(payment.order_id),
+      status: payment.status,
+      amount: payment.amount,
+      expectedPaise,
+      currency: payment.currency,
+      method: payment.method,
+      bank: payment.bank || undefined,
+      fee: payment.fee,
+      tax: payment.tax,
+      error_code: payment.error_code || undefined,
+      error_description: payment.error_description || undefined
+    });
+
+    if (payment.order_id !== orderId || payment.currency !== 'INR') {
       await Booking.updateOne(
         { _id: booking._id },
-        { $set: { paymentIssue: `Payment ${paymentId} does not match the order amount. Check in Razorpay dashboard.` } }
+        { $set: { paymentIssue: `Payment ${paymentId} is for a different order/currency. Check Razorpay dashboard.` } }
       );
-      return res.status(400).json({ success: false, message: 'Payment amount mismatch. Please contact Avantika Travels.' });
+      return res.status(400).json({ success: false, message: 'Payment does not match this booking. Please contact Avantika Travels.' });
+    }
+
+    // The bank / payment method may add its own convenience fee, so the charged amount can be
+    // HIGHER than the package advance. Lower than the advance is never accepted.
+    if (Number(payment.amount) < expectedPaise) {
+      await Booking.updateOne(
+        { _id: booking._id },
+        { $set: { paymentIssue: `Payment ${paymentId} amount ${payment.amount} paise is LESS than required ${expectedPaise}. Check Razorpay dashboard.` } }
+      );
+      return res.status(400).json({ success: false, message: 'Payment amount is less than the required advance. Please contact Avantika Travels.' });
+    }
+    if (Number(payment.amount) > expectedPaise) {
+      rzpLog('verify-payment: customer was charged extra (bank/gateway fee)', {
+        extraPaise: Number(payment.amount) - expectedPaise
+      });
     }
 
     if (payment.status === 'authorized') {
       try {
-        await axios.post(
-          `${RZP_API_BASE}/payments/${paymentId}/capture`,
-          { amount: payment.amount, currency: 'INR' },
-          { headers: { Authorization: rzpAuthHeader(), 'Content-Type': 'application/json' }, timeout: 10000 }
-        );
+        await rzpPost(`/payments/${paymentId}/capture`, { amount: payment.amount, currency: 'INR' });
         payment.status = 'captured';
+        rzpLog('verify-payment: authorized payment captured');
       } catch (e) {
-        console.error('Razorpay capture error:', e.response?.data || e.message);
+        rzpLog('verify-payment: capture failed', rzpErr(e));
       }
     }
     if (payment.status !== 'captured') {
-      return res.status(400).json({ success: false, message: 'Payment is not completed yet. Please wait a moment and check again.' });
+      const reason = payment.error_description ? ` (${payment.error_description})` : '';
+      return res.status(400).json({
+        success: false,
+        message:
+          payment.status === 'failed'
+            ? `Payment failed${reason}. You can try again.`
+            : 'Payment is not completed yet. Please wait a moment and tap “Check payment status”.'
+      });
     }
 
     const result = await finalizePaid(booking, {
       orderId,
       paymentId,
       signature,
-      paidPaise: Number(payment.amount)
+      paidPaise: expectedPaise,
+      gatewayPaise: Number(payment.amount)
     });
 
     res.json({
@@ -1218,6 +1469,34 @@ router.post('/verify-payment/:token', async (req, res) => {
   } catch (error) {
     console.error('Error verifying payment:', error);
     res.status(500).json({ success: false, message: 'Could not verify the payment. If money was deducted, please contact Avantika Travels.' });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Customer taps "Check payment status" (or the payment popup was closed)
+// POST /api/custom-bookings/check-payment/:token
+// -----------------------------------------------------------------------------
+router.post('/check-payment/:token', async (req, res) => {
+  try {
+    const booking = await findByToken(req.params.token);
+    if (!booking) return notFound(res);
+
+    if (booking.paymentStatus === 'paid') {
+      if (!sameDeviceOrIp(booking, req)) {
+        return res.json({ success: true, paid: true, restricted: true, message: 'Booking confirmed.' });
+      }
+      return res.json({ success: true, paid: true, booking: receiptView(booking) });
+    }
+
+    if (!sameDeviceOrIp(booking, req)) return lockedResponse(res);
+
+    const rec = await reconcileOrder(booking, 'check-payment');
+    if (rec) return res.json({ success: true, paid: true, booking: receiptView(rec.booking) });
+
+    res.json({ success: true, paid: false, message: 'No completed payment found for this booking yet.' });
+  } catch (error) {
+    console.error('Error checking payment:', error);
+    res.status(500).json({ success: false, message: 'Could not check the payment status.' });
   }
 });
 
@@ -1236,15 +1515,19 @@ router.post('/razorpay-webhook', async (req, res) => {
     }
 
     const signature = req.headers['x-razorpay-signature'];
-    if (!signature || !req.rawBody) return res.status(400).json({ ok: false });
+    if (!signature || !req.rawBody) {
+      rzpLog('webhook: REJECTED - no signature header or raw body', { hasSignature: Boolean(signature), hasRawBody: Boolean(req.rawBody) });
+      return res.status(400).json({ ok: false });
+    }
 
     const expected = crypto.createHmac('sha256', secret).update(req.rawBody).digest('hex');
     if (!safeEqual(expected, signature)) {
-      console.warn('Razorpay webhook: signature mismatch (check RAZORPAY_WEBHOOK_SECRET)');
+      rzpLog('webhook: REJECTED - signature mismatch (check RAZORPAY_WEBHOOK_SECRET)');
       return res.status(400).json({ ok: false });
     }
 
     const event = req.body?.event;
+    rzpLog('webhook: received', { event });
     if (!['payment.captured', 'order.paid'].includes(event)) return res.json({ ok: true, ignored: true });
 
     const payment = req.body?.payload?.payment?.entity;
@@ -1255,6 +1538,7 @@ router.post('/razorpay-webhook', async (req, res) => {
     if (!booking) {
       // Payment on an order that is no longer the booking's current order (amount was edited)
       const bid = payment.notes && payment.notes.bookingId;
+      rzpLog('webhook: no booking for this order', { order: mask(payment.order_id), notesBookingId: bid || undefined });
       if (bid && OID_RE.test(String(bid))) {
         await Booking.updateOne(
           { _id: bid, paymentStatus: { $ne: 'paid' } },
@@ -1270,7 +1554,18 @@ router.post('/razorpay-webhook', async (req, res) => {
 
     if (booking.paymentStatus === 'paid') return res.json({ ok: true });
 
-    if (payment.status !== 'captured' || Number(payment.amount) !== Number(booking.razorpayOrderAmount)) {
+    const expectedPaise = Number(booking.razorpayOrderAmount);
+    rzpLog('webhook: payment', {
+      payment: mask(payment.id),
+      status: payment.status,
+      amount: payment.amount,
+      expectedPaise,
+      method: payment.method,
+      bank: payment.bank || undefined
+    });
+
+    // Higher than expected is fine (bank / gateway fee). Lower is not.
+    if (payment.status !== 'captured' || Number(payment.amount) < expectedPaise) {
       await Booking.updateOne(
         { _id: booking._id },
         { $set: { paymentIssue: `Payment ${payment.id} amount/status mismatch. Check Razorpay dashboard.` } }
@@ -1282,7 +1577,8 @@ router.post('/razorpay-webhook', async (req, res) => {
       orderId: payment.order_id,
       paymentId: payment.id,
       signature: '',
-      paidPaise: Number(payment.amount)
+      paidPaise: expectedPaise,
+      gatewayPaise: Number(payment.amount)
     });
     res.json({ ok: true });
   } catch (error) {

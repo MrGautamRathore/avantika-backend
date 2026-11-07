@@ -124,11 +124,13 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'paid', 'failed'],
     default: 'pending'
   },
-razorpayOrderId: { type: String, index: true },
+  razorpayOrderId: { type: String, index: true },
   razorpayOrderAmount: { type: Number }, // in paise
   razorpayPaymentId: { type: String },
   razorpaySignature: { type: String },
-  paidAmount: { type: Number, default: 0 },
+  paidAmount: { type: Number, default: 0 }, // the package advance (what we asked for)
+  gatewayChargedAmount: { type: Number, default: 0 }, // what Razorpay actually charged the customer
+  gatewayFeeAmount: { type: Number, default: 0 }, // extra bank / gateway convenience fee paid by the customer
   paidAt: { type: Date },
   manualPayment: { type: Boolean, default: false }, // admin marked as paid (cash / bank transfer)
   paymentIssue: { type: String, default: '' }, // set when a payment arrives that does not match the booking
